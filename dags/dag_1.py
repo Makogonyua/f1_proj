@@ -1,6 +1,7 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
+from airflow.providers.postgres.operators.postgres import PostgresOperator
 from datetime import datetime
 import requests
 import pandas as pd
@@ -11,22 +12,23 @@ pg_conn_id_af = 'pg' #соединение AF
 season = 2026 #год для загрузки
 url_api = 'https://api.openf1.org/v1' 
 time_delay  = 2.0
+sql_dir = '/home/admin1/f1_proj'
 
 
 load_meetings = True
 load_sessions = True 
-load_drivers = True
-load_laps = True
-load_stints = True
-load_pit = True
-load_weather = True
-load_race_control = True
-load_session_result = True
-load_start_grid = True
-load_overtake = True
-load_posit = True
-pos_teams = True
-pos_drivers = True
+load_drivers = False
+load_laps = False
+load_stints = False
+load_pit = False
+load_weather = False
+load_race_control = False
+load_session_result = False
+load_start_grid = False
+load_overtake = False
+load_posit = False
+pos_teams = False
+pos_drivers = False
 
 #Выбор по типу сессии для загрузки. 
 #session_types_filter = ['Race', 'Qualifying'] 
@@ -37,9 +39,6 @@ def make_api_request(endpoint, params):
     url = f"{url_api}/{endpoint}"
     try:
         response = requests.get(url, params=params, timeout=10)
-        
-        # КРИТИЧЕСКИ ВАЖНО: выбрасывает исключение при кодах 404, 422, 500 и т.д.
-        #response.raise_for_status() 
         
         data = response.json()
         
@@ -412,32 +411,155 @@ with DAG(
     default_args=default_args,
     schedule=None,
     catchup=False,
+    template_searchpath=sql_dir
 ) as dag:
     
-    meetings_task = PythonOperator(task_id='extract_meetings', python_callable=extract_meetings)
-    sessions_task = PythonOperator(task_id='extract_sessions', python_callable=extract_sessions)
-    drivers_task = PythonOperator(task_id='extract_drivers', python_callable=extract_drivers)
+    init_db_task = PostgresOperator(
+        task_id='init_db_stg_ods',
+        postgres_conn_id=pg_conn_id_af,
+        sql='sql/init_db_stg_ods.sql'
+    )
+
+    meetings_task = PythonOperator(
+        task_id='extract_meetings', 
+        python_callable=extract_meetings)
+
+    sessions_task = PythonOperator(
+        task_id='extract_sessions', 
+        python_callable=extract_sessions)
+
+    drivers_task = PythonOperator(
+        task_id='extract_drivers', 
+        python_callable=extract_drivers)
+
+    db_md_task = PostgresOperator(
+        task_id='md_ods',
+        postgres_conn_id=pg_conn_id_af,
+        sql='sql/md_ods.sql'
+    )
     
-    laps_task = PythonOperator(task_id='extract_laps', python_callable=extract_laps)
-    stints_task = PythonOperator(task_id='extract_stints', python_callable=extract_stints)
-    pit_task = PythonOperator(task_id='extract_pit', python_callable=extract_pit)
-    weather_task = PythonOperator(task_id='extract_weather', python_callable=extract_weather)
-    race_control_task = PythonOperator(task_id='extract_race_control', python_callable=extract_race_control)
+    laps_task = PythonOperator(
+        task_id='extract_laps', 
+        python_callable=extract_laps)
+
+    db_laps_ods_task = PostgresOperator(
+        task_id='laps_ods',
+        postgres_conn_id=pg_conn_id_af,
+        sql='sql/fct_laps_ods.sql'
+    )
+
+    stints_task = PythonOperator(
+        task_id='extract_stints', 
+        python_callable=extract_stints)
+
+    db_stints_ods_task = PostgresOperator(
+        task_id='stints_ods',
+        postgres_conn_id=pg_conn_id_af,
+        sql='sql/fct_stints_ods.sql'
+    )
+
+    pit_task = PythonOperator(
+        task_id='extract_pit', 
+        python_callable=extract_pit)
     
-    overtakes_task = PythonOperator(task_id='extract_overtakes', python_callable=extract_overtakes)
-    position_task = PythonOperator(task_id='extract_position', python_callable=extract_position)
+    db_pit_ods_task = PostgresOperator(
+        task_id='pit_ods',
+        postgres_conn_id=pg_conn_id_af,
+        sql='sql/fct_pit_ods.sql'
+    )
 
-    session_result_task = PythonOperator(task_id='extract_session_result', python_callable=extract_session_result)
-    starting_grid_task = PythonOperator(task_id='extract_starting_grid', python_callable=extract_starting_grid)
-    championship_drivers_task = PythonOperator(task_id='extract_championship_drivers', python_callable=extract_championship_drivers)
-    championship_teams_task = PythonOperator(task_id='extract_championship_teams', python_callable=extract_championship_teams)
+    weather_task = PythonOperator(
+        task_id='extract_weather', 
+        python_callable=extract_weather)
+
+    db_weather_ods_task = PostgresOperator(
+        task_id='weather_ods',
+        postgres_conn_id=pg_conn_id_af,
+        sql='sql/fct_weather_ods.sql'
+    )
+
+    race_control_task = PythonOperator(
+        task_id='extract_race_control', 
+        python_callable=extract_race_control)
+
+    db_race_control_ods_task = PostgresOperator(
+        task_id='race_control_ods',
+        postgres_conn_id=pg_conn_id_af,
+        sql='sql/fct_race_control_ods.sql'
+    )
+
+    overtakes_task = PythonOperator(
+        task_id='extract_overtakes', 
+        python_callable=extract_overtakes)
+
+    db_overtakes_ods_task = PostgresOperator(
+        task_id='overtakes_ods',
+        postgres_conn_id=pg_conn_id_af,
+        sql='sql/fct_overtakes_ods.sql'
+    )
+
+    position_task = PythonOperator(
+        task_id='extract_position', 
+        python_callable=extract_position)
+
+    db_position_ods_task = PostgresOperator(
+        task_id='position_ods',
+        postgres_conn_id=pg_conn_id_af,
+        sql='sql/fct_position_ods.sql'
+    )
+
+    session_result_task = PythonOperator(
+        task_id='extract_session_result', 
+        python_callable=extract_session_result)
+
+    db_session_result_ods_task = PostgresOperator(
+        task_id='session_result_ods',
+        postgres_conn_id=pg_conn_id_af,
+        sql='sql/fct_session_result_ods.sql'
+    )
+
+    starting_grid_task = PythonOperator(
+        task_id='extract_starting_grid', 
+        python_callable=extract_starting_grid)
+
+    db_starting_grid_ods_task = PostgresOperator(
+        task_id='starting_grid_ods',
+        postgres_conn_id=pg_conn_id_af,
+        sql='sql/fct_starting_grid_ods.sql'
+    )
+
+    championship_drivers_task = PythonOperator(
+        task_id='extract_championship_drivers', 
+        python_callable=extract_championship_drivers)
+
+    db_championship_drivers_ods_task = PostgresOperator(
+        task_id='championship_drivers_ods',
+        postgres_conn_id=pg_conn_id_af,
+        sql='sql/championship_drivers_ods.sql'
+    )
+
+    championship_teams_task = PythonOperator(
+        task_id='extract_championship_teams', 
+        python_callable=extract_championship_teams)
+
+    db_championship_teams_ods_task = PostgresOperator(
+        task_id='championship_teams_ods',
+        postgres_conn_id=pg_conn_id_af,
+        sql='sql/championship_teams_ods.sql'
+    )
 
 
-    meetings_task >> sessions_task
-    sessions_task >> [
-        drivers_task, laps_task, stints_task, pit_task,
-        weather_task, race_control_task,
-        overtakes_task, position_task, 
-        session_result_task, starting_grid_task, 
-        championship_drivers_task, championship_teams_task
-    ]
+    init_db_task >> meetings_task >> sessions_task
+    sessions_task >> drivers_task >> db_md_task
+    sessions_task >> laps_task >>  db_laps_ods_task
+    sessions_task >> stints_task >>  db_stints_ods_task
+    sessions_task >> pit_task >> db_pit_ods_task
+    sessions_task >> weather_task >>  db_weather_ods_task
+    sessions_task >> race_control_task >> db_race_control_ods_task
+    sessions_task >> overtakes_task >>  db_overtakes_ods_task
+    sessions_task >> position_task >>  db_position_ods_task
+    sessions_task >> session_result_task >> db_session_result_ods_task
+    sessions_task >> starting_grid_task >>  db_starting_grid_ods_task
+    sessions_task >> championship_drivers_task >> db_championship_drivers_ods_task
+    sessions_task >> championship_teams_task >> db_championship_teams_ods_task
+    
