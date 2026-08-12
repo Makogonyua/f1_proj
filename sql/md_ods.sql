@@ -1,12 +1,12 @@
 insert into ods.dim_driver (
     driver_number, broadcast_name, first_name, last_name, full_name, 
-    name_acronym, country_code, team_name, team_colour, headshot_url
+    name_acronym, country_code, team_name, team_colour, headshot_url, meeting_key
 )
 select distinct
     driver_number, broadcast_name, first_name, last_name, full_name, 
-    name_acronym, country_code, team_name, team_colour, headshot_url
+    name_acronym, country_code, team_name, team_colour, headshot_url, meeting_key
 from staging.dim_driver
-on conflict (driver_number) do nothing;
+on conflict (driver_number, name_acronym, meeting_key) do nothing;
 
 insert into ods.dim_meeting (
     meeting_key, meeting_name, country_name, country_code, 

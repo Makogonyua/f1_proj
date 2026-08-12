@@ -2,21 +2,25 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.providers.postgres.operators.postgres import PostgresOperator
+import clickhouse_connect
+from airflow.hooks.base import BaseHook
+
 from datetime import datetime
 import requests
 import pandas as pd
 import time
 
 
-pg_conn_id_af = 'pg' #соединение AF 
-season = 2026 #год для загрузки
+pg_conn_id_af = 'pg' #соединение pg из af
+ch_conn_id_af = 'ch' #соединение ch из af
+season = 2024 #год для загрузки
 url_api = 'https://api.openf1.org/v1' 
 time_delay  = 2.0
 sql_dir = '/home/admin1/f1_proj'
 
 
 load_meetings = True
-load_sessions = True 
+load_sessions = False 
 load_drivers = False
 load_laps = False
 load_stints = False
@@ -31,29 +35,23 @@ pos_teams = False
 pos_drivers = False
 
 #Выбор по типу сессии для загрузки. 
-#session_types_filter = ['Race', 'Qualifying'] 
-session_types_filter = None
+session_types_filter = ['Race','Qualifying'] 
+#session_types_filter = None 
 
     
 def make_api_request(endpoint, params):
     url = f"{url_api}/{endpoint}"
     try:
+        print(f"{url}: {params}")
         response = requests.get(url, params=params, timeout=10)
-        
         data = response.json()
-        
-
-        if not isinstance(data, list): #проверяем что получили массив
-
-            time.sleep(time_delay)
-            return []
-            
         time.sleep(time_delay)
         return data
         
     except Exception as e:
         print(f"Ошибка {endpoint}: {str(e)[:200]}")
         return []
+
 
 def flatten_arrays_in_df(df):
 
@@ -104,16 +102,10 @@ def clean_numeric_columns(df, columns_to_clean=None):
 def load_to_postgres(df, table_name, numeric_columns=None):
     if df is None or df.empty:
         return
-
-    # удаляем массивы в колонках
     df = flatten_arrays_in_df(df.copy())
-    
-    # чистим цифровые колонки от текста
     df = clean_numeric_columns(df, numeric_columns)
-
     hook = PostgresHook(postgres_conn_id=pg_conn_id_af)
-    hook.run(f"TRUNCATE {table_name}") #Чистим stage
-    
+    hook.run(f"TRUNCATE {table_name}") 
     hook.insert_rows( 
         table=table_name,
         rows=df.values.tolist(),
@@ -173,18 +165,27 @@ def extract_drivers(**kwargs):
     if not all_drivers:
         return 
     
-    df = pd.DataFrame(all_drivers).drop_duplicates(subset=['driver_number'])
-    df = df[['driver_number', 'broadcast_name', 'first_name', 'last_name', 'full_name', 'name_acronym', 'country_code', 'team_name', 'team_colour', 'headshot_url']]
+    df = pd.DataFrame(all_drivers).drop_duplicates(subset=['driver_number','meeting_key'])
+    df = df[['driver_number', 'broadcast_name', 'first_name', 'last_name', 'full_name', 'name_acronym', 'country_code', 'team_name', 'team_colour', 'headshot_url', 'meeting_key']]
     load_to_postgres(df, 'staging.dim_driver')
+
+    return [row['driver_number'] for row in data]
 
 def extract_laps(**kwargs):
     if not load_laps:
         return
     session_keys = kwargs['ti'].xcom_pull(task_ids='extract_sessions') or []
+    drivers_keys = kwargs['ti'].xcom_pull(task_ids='extract_drivers') or []
     all_laps = []
     
     for session_key in session_keys:
-        all_laps.extend(make_api_request('laps', {'session_key': session_key}))
+        for driver_number in drivers_keys:
+            payload = {'session_key': session_key, 'driver_number':driver_number}
+            all_laps.extend(make_api_request('laps', payload))
+
+
+    #for session_key in session_keys:
+    #    all_laps.extend(make_api_request_for_laps('laps', {'session_key': session_key}))
     
     if not all_laps:
         return
@@ -230,7 +231,7 @@ def extract_pit(**kwargs):
             all_pits.extend(make_api_request('pit', {'session_key': session_key}))
         except Exception:
             continue
-    df = pd.DataFrame(all_pits)[['session_key', 'meeting_key', 'driver_number', 'lap_number', 'pit_duration']]
+    df = pd.DataFrame(all_pits)[['session_key', 'meeting_key', 'driver_number', 'lap_number', 'pit_duration', 'stop_duration']]
     load_to_postgres(df, 'staging.fct_pit')
 
 
@@ -321,7 +322,7 @@ def extract_session_result(**kwargs):
 
     required_cols = ['session_key', 'meeting_key', 'driver_number', 'position', 
                      'number_of_laps', 'duration', 'gap_to_leader', 
-                     'dnf', 'dns', 'dsq']
+                     'dnf', 'dns', 'dsq', 'points']
     for col in required_cols:
         if col not in df.columns:
             df[col] = None
@@ -399,6 +400,34 @@ def extract_championship_teams(**kwargs):
     df = pd.DataFrame(all_data)
     load_to_postgres(df, 'staging.fct_championship_teams')
 
+def query_clickhouse():
+
+    conn = BaseHook.get_connection(ch_conn_id_af)
+    host = conn.host
+    port = conn.port
+    username = conn.login
+    password = conn.password
+    database = conn.schema
+    
+    extra = conn.extra_dejson
+    secure = extra.get('secure', False)
+    
+    client = clickhouse_connect.get_client(
+        host=host,
+        port=port,
+        username=username,
+        password=password,
+        database=database,
+        secure=secure
+    )
+
+
+    result = client.query('select version()')
+    print(f"ClickHouse version: {result.result_rows}")
+    client.close()
+    
+
+
 
 default_args = {
     'owner': 'makogonyua',
@@ -411,6 +440,7 @@ with DAG(
     default_args=default_args,
     schedule=None,
     catchup=False,
+
     template_searchpath=sql_dir
 ) as dag:
     
@@ -548,6 +578,35 @@ with DAG(
         sql='sql/championship_teams_ods.sql'
     )
 
+    db_init_dds = PostgresOperator(
+        task_id='init_db_dds',
+        postgres_conn_id=pg_conn_id_af,
+        sql='sql/init_db_dds.sql'
+    )
+
+    db_load_dds = PostgresOperator(
+        task_id='load_db_dds',
+        postgres_conn_id=pg_conn_id_af,
+        sql='sql/load_dds.sql'
+    )
+
+    db_init_dm = PostgresOperator(
+        task_id='init_db_dm',
+        postgres_conn_id=pg_conn_id_af,
+        sql='sql/init_db_dm_pg.sql'
+    )
+
+    db_load_dm = PostgresOperator(
+        task_id='load_db_dm',
+        postgres_conn_id=pg_conn_id_af,
+        sql='sql/load_dm_pg.sql'
+    )
+
+    check_version = PythonOperator(
+        task_id='check_version',
+        python_callable=query_clickhouse
+    )
+
 
     init_db_task >> meetings_task >> sessions_task
     sessions_task >> drivers_task >> db_md_task
@@ -562,4 +621,7 @@ with DAG(
     sessions_task >> starting_grid_task >>  db_starting_grid_ods_task
     sessions_task >> championship_drivers_task >> db_championship_drivers_ods_task
     sessions_task >> championship_teams_task >> db_championship_teams_ods_task
-    
+    [db_md_task, db_laps_ods_task, db_stints_ods_task, db_pit_ods_task, db_weather_ods_task, db_race_control_ods_task,
+    db_overtakes_ods_task, db_position_ods_task, db_session_result_ods_task, db_starting_grid_ods_task, db_championship_drivers_ods_task,
+    db_championship_teams_ods_task
+    ] >> db_init_dds >> db_load_dds >> db_init_dm >> db_load_dm >> check_version

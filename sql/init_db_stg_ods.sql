@@ -14,7 +14,8 @@ create table if not exists staging.dim_driver (
 	team_name varchar(100),
 	team_colour varchar(10),
 	headshot_url varchar(500),
-	primary key (driver_number)
+	meeting_key int4,
+	primary key (driver_number, name_acronym, meeting_key)
 );
 
 create table if not exists staging.dim_meeting (
@@ -175,7 +176,8 @@ create table if not exists ods.dim_driver (
 	team_name varchar(100),
 	team_colour varchar(10),
 	headshot_url varchar(500),
-	primary key (driver_number)
+	meeting_key int4,
+	primary key (driver_number, name_acronym, meeting_key)
 );
 
 create table if not exists ods.dim_meeting (
